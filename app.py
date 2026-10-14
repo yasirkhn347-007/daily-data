@@ -1,12 +1,15 @@
+import base64
 import html
 import io
 import os
 import pickle
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Distributors Account", page_icon="📊", layout="wide")
 
@@ -292,6 +295,143 @@ def load_data(mtime):
         return pickle.load(f)
 
 
+# ------------------------------------------------------------------ PDF
+def build_pdf(name, total, records, shown_at):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    def t(x):  # Helvetica ke liye safe text
+        return html.escape(str(x).encode("cp1252", "replace").decode("cp1252"))
+
+    base = ParagraphStyle("b", fontName="Helvetica", fontSize=8.5, leading=10.5)
+    bold = ParagraphStyle("bd", parent=base, fontName="Helvetica-Bold")
+    right = ParagraphStyle("r", parent=base, alignment=2)
+    head = ParagraphStyle("h", parent=bold, textColor=colors.white)
+    head_r = ParagraphStyle("hr", parent=head, alignment=2)
+    title = ParagraphStyle("t", fontName="Helvetica-Bold", fontSize=15, leading=19)
+    small = ParagraphStyle("s", parent=base, textColor=colors.HexColor("#555555"))
+
+    def money_or_dash(v):
+        return "-" if v is None else f"{v:,.0f}"
+
+    story = [
+        Paragraph(t(name), title),
+        Paragraph(f"Statement - {t(shown_at)}", small),
+        Spacer(1, 8),
+    ]
+    summ = Table(
+        [
+            [Paragraph("Balance", small), Paragraph("Total Debit", small), Paragraph("Total Credit", small)],
+            [
+                Paragraph(money_or_dash(total["balance"]), bold),
+                Paragraph(money_or_dash(total["debit"]), bold),
+                Paragraph(money_or_dash(total["credit"]), bold),
+            ],
+        ],
+        colWidths=[170, 170, 170],
+    )
+    summ.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#bbbbbb")),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f5f6f8")),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story += [summ, Spacer(1, 10)]
+
+    rows = [[Paragraph("Date", head), Paragraph("Details", head),
+             Paragraph("Amount", head_r), Paragraph("Balance", head_r)]]
+    for r in records:
+        dr, cr = r["Debit"], r["Credit"]
+        dr_ok, cr_ok = pd.notna(dr), pd.notna(cr)
+        amt_p = Paragraph("", right)
+        if dr_ok or cr_ok:
+            amt = (dr if dr_ok else 0) - (cr if cr_ok else 0)
+            col = "#c62828" if amt > 0 else ("#2e7d32" if amt < 0 else "#000000")
+            amt_p = Paragraph(f'<font color="{col}"><b>{signed(amt)}</b></font>', right)
+        bal = r["Balance"]
+        lines = []
+        if r["Particulars"]:
+            lines.append(f"<b>{t(r['Particulars'])}</b>")
+        lines += [t(x) for x in details_lines(r)]
+        rows.append(
+            [
+                Paragraph(t(r["Date"]), base),
+                Paragraph("<br/>".join(lines), base),
+                amt_p,
+                Paragraph("" if pd.isna(bal) else f"{bal:,.0f}", right),
+            ]
+        )
+    tbl = Table(rows, colWidths=[60, 270, 100, 100], repeatRows=1)
+    tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#37474f")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LINEBELOW", (0, 1), (-1, -1), 0.3, colors.HexColor("#cccccc")),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]
+        )
+    )
+    story.append(tbl)
+
+    def footer(canvas, doc):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(colors.HexColor("#777777"))
+        canvas.drawRightString(A4[0] - 40, 22, f"Page {doc.page}")
+        canvas.restoreState()
+
+    buf = io.BytesIO()
+    SimpleDocTemplate(
+        buf, pagesize=A4, leftMargin=40, rightMargin=40, topMargin=36, bottomMargin=36,
+        title=f"{name} - Statement",
+    ).build(story, onFirstPage=footer, onLaterPages=footer)
+    return buf.getvalue()
+
+
+def share_button_html(pdf_bytes, filename):
+    b64 = base64.b64encode(pdf_bytes).decode()
+    return f"""
+<button id="sh" style="width:100%;padding:9px 12px;font-size:15px;border-radius:8px;
+border:1px solid rgba(128,128,128,.5);background:#fff;color:#222;cursor:pointer;">
+📤 PDF share karein (WhatsApp wagera)</button>
+<div id="msg" style="font:12px sans-serif;color:#777;margin-top:4px;"></div>
+<script>
+const b64 = "{b64}", fname = "{filename}";
+document.getElementById("sh").onclick = async () => {{
+  const msg = document.getElementById("msg");
+  try {{
+    const bin = atob(b64), arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const file = new File([arr], fname, {{type: "application/pdf"}});
+    if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
+      await navigator.share({{files: [file], title: fname}});
+    }} else {{
+      msg.textContent = "Is browser mein share nahi chalta, 'PDF download' button use karein.";
+    }}
+  }} catch (e) {{
+    if (e.name !== "AbortError") msg.textContent = "Share nahi ho saka, 'PDF download' button use karein.";
+  }}
+}};
+</script>"""
+
+
+@st.cache_data(show_spinner=False, max_entries=40)
+def make_pdf(mtime, pid, show, newest_first):
+    d = load_data(mtime)
+    p = d["parties"][pid]
+    records = pick_rows(p["df"], show, newest_first)
+    shown_at = datetime.now(PKT).strftime("%d-%m-%Y %I:%M %p")
+    return build_pdf(p["name"], p["total"], records, shown_at)
+
+
 # ------------------------------------------------------------------ login
 ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD", "admin123")
 USER_PASSWORD = get_secret("USER_PASSWORD", "user123")
@@ -443,6 +583,18 @@ def show_party(pid):
     records = pick_rows(df, show, newest_first)
     st.caption(f"{len(records)} entries (kul {len(df)})")
     st.caption("🔴 + Debit (sale)   |   🟢 - Credit (payment)")
+    try:
+        pdf = make_pdf(mtime, pid, show, newest_first)
+        fname = re.sub(r"[^A-Za-z0-9]+", "_", p["name"]).strip("_") + "_statement.pdf"
+        b1, b2 = st.columns(2)
+        b1.download_button(
+            "📥 PDF download", pdf, file_name=fname, mime="application/pdf",
+            key="pdf_dl", use_container_width=True,
+        )
+        with b2:
+            components.html(share_button_html(pdf, fname), height=70)
+    except ImportError:
+        st.warning("PDF ke liye GitHub par naya requirements.txt bhi upload karein.")
     st.markdown(ledger_html(records), unsafe_allow_html=True)
 
 
