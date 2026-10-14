@@ -4,6 +4,7 @@ import io
 import os
 import pickle
 import re
+from urllib.parse import quote
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -438,6 +439,30 @@ def build_image(name, total, records, shown_at):
     return buf.getvalue()
 
 
+def whatsapp_text(name, total, records, shown_at, max_rows=10):
+    """WhatsApp par seedha bhejne ke liye chhota text (image link se attach nahi ho sakti)."""
+    lines = [f"*{name}*", f"Statement - {shown_at}", ""]
+    if total.get("balance") is not None:
+        lines.append(f"*Balance: {total['balance']:,.0f}*")
+        lines.append("")
+    count = 0
+    for r in records:
+        if count >= max_rows:
+            break
+        dr, cr = r["Debit"], r["Credit"]
+        dr_ok, cr_ok = pd.notna(dr), pd.notna(cr)
+        if not (dr_ok or cr_ok):
+            continue  # sirf Carriage/khali rows chhod do
+        amt = (dr if dr_ok else 0) - (cr if cr_ok else 0)
+        d = r["Date"][:6] + r["Date"][8:] if len(r["Date"]) == 10 else r["Date"]
+        what = r["Particulars"] or "Sales"
+        extra = f" ({r['Qty']}@{short_num(r['Rate'])})" if r["Qty"] and pd.notna(r["Rate"]) else ""
+        bal = "" if pd.isna(r["Balance"]) else f" | Bal {r['Balance']:,.0f}"
+        lines.append(f"{d} {what}{extra}: {signed(amt)}{bal}".strip())
+        count += 1
+    return "\n".join(lines)
+
+
 def share_button_html(data_bytes, filename, mime, label):
     b64 = base64.b64encode(data_bytes).decode()
     return f"""
@@ -640,6 +665,14 @@ def show_party(pid):
             )
     except ImportError:
         st.warning("Screenshot nahi ban saka (Pillow install nahi).")
+    wa_text = whatsapp_text(
+        p["name"], t, records, datetime.now(PKT).strftime("%d-%m-%Y %I:%M %p")
+    )
+    st.link_button(
+        "💬 WhatsApp par seedha bhejein (text)",
+        "https://wa.me/?text=" + quote(wa_text),
+        use_container_width=True,
+    )
     st.markdown(ledger_html(records), unsafe_allow_html=True)
 
 
