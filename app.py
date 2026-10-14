@@ -101,22 +101,27 @@ def details_lines(r):
 
 
 def ledger_html(df):
-    """Statement ki table (Details ek cell mein 2 line, Amount rang aur +/- ke saath)."""
+    """Statement ki table: mobile par bina scroll ke fit ho (text wrap hota hai)."""
     esc = html.escape
-    cell = "padding:6px 8px;vertical-align:top;border-bottom:1px solid rgba(128,128,128,0.3);"
-    head = (
-        "padding:8px;text-align:left;background:#f0f2f6;color:#31333f;"
-        "position:sticky;top:0;white-space:nowrap;"
+    cell = (
+        "padding:6px 5px;vertical-align:top;border-bottom:1px solid rgba(128,128,128,0.3);"
+        "overflow-wrap:anywhere;"
     )
+    head = (
+        "padding:7px 5px;text-align:left;background:#f0f2f6;color:#31333f;"
+        "position:sticky;top:0;"
+    )
+    right = "text-align:right;"
     out = [
-        '<div style="max-height:560px;overflow:auto;border:1px solid rgba(128,128,128,0.3);border-radius:6px;">',
-        '<table style="width:100%;border-collapse:collapse;font-size:14px;">',
+        '<div style="max-height:600px;overflow-y:auto;overflow-x:hidden;'
+        'border:1px solid rgba(128,128,128,0.3);border-radius:6px;">',
+        '<table style="width:100%;border-collapse:collapse;font-size:13px;line-height:1.35;">',
         "<thead><tr>"
-        + "".join(
-            f'<th style="{head}{"text-align:right;" if h in ("Amount (+/-)", "Balance") else ""}">{h}</th>'
-            for h in ("Date", "Particulars", "Details", "Amount (+/-)", "Balance")
-        )
-        + "</tr></thead><tbody>",
+        f'<th style="{head}">Date</th>'
+        f'<th style="{head}">Details</th>'
+        f'<th style="{head}{right}">Amount</th>'
+        f'<th style="{head}{right}">Balance</th>'
+        "</tr></thead><tbody>",
     ]
     for r in df.to_dict("records"):
         dr, cr = r["Debit"], r["Credit"]
@@ -128,14 +133,19 @@ def ledger_html(df):
             amt_html = f'<span style="color:{color};font-weight:600;">{signed(amt)}</span>'
         bal = r["Balance"]
         bal_txt = "" if pd.isna(bal) else f"{bal:,.0f}"
-        det = "<br>".join(esc(x) for x in details_lines(r))
+        d = r["Date"]
+        if len(d) == 10 and d[2] == "-" and d[5] == "-":
+            d = d[:6] + d[8:]  # 26-02-2026 -> 26-02-26
+        lines = []
+        if r["Particulars"]:
+            lines.append(f'<b style="font-weight:600;">{esc(r["Particulars"])}</b>')
+        lines += [f'<span style="opacity:0.85;">{esc(x)}</span>' for x in details_lines(r)]
         out.append(
             "<tr>"
-            f'<td style="{cell}white-space:nowrap;">{esc(r["Date"])}</td>'
-            f'<td style="{cell}">{esc(r["Particulars"])}</td>'
-            f'<td style="{cell}white-space:nowrap;">{det}</td>'
-            f'<td style="{cell}text-align:right;white-space:nowrap;">{amt_html}</td>'
-            f'<td style="{cell}text-align:right;white-space:nowrap;">{bal_txt}</td>'
+            f'<td style="{cell}white-space:nowrap;">{esc(d)}</td>'
+            f'<td style="{cell}">{"<br>".join(lines)}</td>'
+            f'<td style="{cell}{right}white-space:nowrap;">{amt_html}</td>'
+            f'<td style="{cell}{right}white-space:nowrap;">{bal_txt}</td>'
             "</tr>"
         )
     out.append("</tbody></table></div>")
