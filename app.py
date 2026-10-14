@@ -338,6 +338,7 @@ if st.session_state.role == "admin":
 
 if st.sidebar.button("Logout"):
     st.session_state.role = None
+    st.session_state.pop("view", None)
     st.rerun()
 
 # ------------------------------------------------------------------ show data
@@ -355,10 +356,31 @@ if data.get("report_date"):
     caption += f"  |  Summary date: {data['report_date']}"
 st.caption(caption)
 
-tab_summary, tab_party = st.tabs(["📋 Distributor Summary", "👤 Party Statement"])
+# ---- Summary / Party view (session mein yaad rehta hai ke kaun si screen khuli hai)
+if "view" not in st.session_state:
+    st.session_state.view = "summary"
+    st.session_state.pid = None
 
-# ---- Summary tab
-with tab_summary:
+st.markdown(
+    """<style>
+.st-key-partylist button { justify-content: flex-start; text-align: left; }
+.st-key-partylist button p { font-weight: 700; text-align: left; }
+</style>""",
+    unsafe_allow_html=True,
+)
+
+
+def bal_text(v):
+    if v is None or pd.isna(v):
+        return ""
+    if v > 0:
+        return f":red[**{v:,.0f}**]"
+    if v < 0:
+        return f":green[**{v:,.0f}**]"
+    return "**0**"
+
+
+def show_summary():
     summary = data["summary"]
     party_rows = summary[summary["S.No"].notna()]
     c1, c2 = st.columns(2)
@@ -373,49 +395,58 @@ with tab_summary:
             | view["City"].str.contains(q, case=False, na=False)
         )
         view = view[m]
-    view = view[["S.No", "Party", "City", "Total Balance"]]
-    st.write(f"Rows: {len(view)}")
-    st.dataframe(
-        view.style.format(na_rep="").format({"Total Balance": money}, na_rep=""),
-        use_container_width=True,
-        hide_index=True,
-        height=600,
-    )
+    st.write(f"Rows: {len(view)}  (party par click karein, uska statement khul jayega)")
 
-# ---- Party statement tab
-with tab_party:
-    parties = data["parties"]
-    ids = sorted(parties, key=lambda i: parties[i]["name"].lower())
-    pid = st.selectbox(
-        "Party chunein (naam likh kar bhi dhoond sakte hain)",
-        ids,
-        index=None,
-        placeholder="Party ka naam...",
-        format_func=lambda i: parties[i]["name"],
-    )
-    if pid is None:
-        st.info("Upar se party chunein, uska poora statement yahan nazar aayega.")
-    else:
-        p = parties[pid]
-        st.subheader(p["name"])
-        t = p["total"]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Balance", money(t["balance"]) if t["balance"] is not None else "-")
-        c2.metric("Total Debit", money(t["debit"]) if t["debit"] is not None else "-")
-        c3.metric("Total Credit", money(t["credit"]) if t["credit"] is not None else "-")
+    with st.container(key="partylist"):
+        for i, r in enumerate(view.to_dict("records")):
+            name = r["Party"] + (f" · {r['City']}" if r["City"] else "")
+            bal = bal_text(r["Total Balance"])
+            sno = r["S.No"]
+            if pd.notna(sno) and str(int(sno)) in data["parties"]:
+                label = f"**{name}**   {bal}"
+                if st.button(label, key=f"p_{int(sno)}_{i}", use_container_width=True):
+                    st.session_state.view = "party"
+                    st.session_state.pid = str(int(sno))
+                    st.rerun()
+            else:
+                st.markdown(f"**{name}**   {bal}")
 
-        df = p["df"]
-        if df.empty:
-            st.info("Is party ki koi entry nahi hai.")
-        else:
-            col_a, col_b = st.columns([2, 1])
-            show = col_a.radio(
-                "Kitni entries dekhni hain",
-                ["Aakhri 50", "Aakhri 200", "Sab"],
-                horizontal=True,
-            )
-            newest_first = col_b.checkbox("Naya pehle", value=True)
-            records = pick_rows(df, show, newest_first)
-            st.caption(f"{len(records)} entries (kul {len(df)})")
-            st.caption("🔴 + Debit (sale)   |   🟢 - Credit (payment)")
-            st.markdown(ledger_html(records), unsafe_allow_html=True)
+
+def show_party(pid):
+    if st.button("⬅ Summary par wapas", key="back_top"):
+        st.session_state.view = "summary"
+        st.rerun()
+
+    p = data["parties"].get(pid)
+    if p is None:
+        st.info("Is party ka statement nahi mila.")
+        return
+
+    st.subheader(p["name"])
+    t = p["total"]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Balance", money(t["balance"]) if t["balance"] is not None else "-")
+    c2.metric("Total Debit", money(t["debit"]) if t["debit"] is not None else "-")
+    c3.metric("Total Credit", money(t["credit"]) if t["credit"] is not None else "-")
+
+    df = p["df"]
+    if df.empty:
+        st.info("Is party ki koi entry nahi hai.")
+        return
+    col_a, col_b = st.columns([2, 1])
+    show = col_a.radio(
+        "Kitni entries dekhni hain",
+        ["Aakhri 50", "Aakhri 200", "Sab"],
+        horizontal=True,
+    )
+    newest_first = col_b.checkbox("Naya pehle", value=True)
+    records = pick_rows(df, show, newest_first)
+    st.caption(f"{len(records)} entries (kul {len(df)})")
+    st.caption("🔴 + Debit (sale)   |   🟢 - Credit (payment)")
+    st.markdown(ledger_html(records), unsafe_allow_html=True)
+
+
+if st.session_state.view == "party" and st.session_state.pid:
+    show_party(st.session_state.pid)
+else:
+    show_summary()
