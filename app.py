@@ -100,7 +100,38 @@ def details_lines(r):
     return [x for x in (line1, line2) if x]
 
 
-def ledger_html(df):
+def group_rows(df):
+    """Ek gari/entry ke rows ek group mein: dated row pehle, Carriage sab se aakhir mein."""
+    groups = []
+    for rec in df.to_dict("records"):
+        if rec["Date"] or not groups:
+            groups.append([rec])
+        else:
+            groups[-1].append(rec)
+    out = []
+    for g in groups:
+        rest = sorted(g[1:], key=lambda r: r["Particulars"].strip().lower().startswith("carriage"))
+        out.append(g[:1] + rest)
+    return out
+
+
+def pick_rows(df, show, newest_first):
+    groups = group_rows(df)
+    limit = {"Aakhri 50": 50, "Aakhri 200": 200}.get(show)
+    if limit:
+        chosen, count = [], 0
+        for g in reversed(groups):
+            chosen.append(g)
+            count += len(g)
+            if count >= limit:
+                break
+        groups = chosen[::-1]
+    if newest_first:
+        groups = groups[::-1]
+    return [r for g in groups for r in g]
+
+
+def ledger_html(records):
     """Statement ki table: mobile par bina scroll ke fit ho (text wrap hota hai)."""
     esc = html.escape
     cell = (
@@ -123,7 +154,7 @@ def ledger_html(df):
         f'<th style="{head}{right}">Balance</th>'
         "</tr></thead><tbody>",
     ]
-    for r in df.to_dict("records"):
+    for r in records:
         dr, cr = r["Debit"], r["Credit"]
         dr_ok, cr_ok = pd.notna(dr), pd.notna(cr)
         amt_html = ""
@@ -384,12 +415,7 @@ with tab_party:
                 horizontal=True,
             )
             newest_first = col_b.checkbox("Naya pehle", value=True)
-            if show == "Aakhri 50":
-                df = df.tail(50)
-            elif show == "Aakhri 200":
-                df = df.tail(200)
-            if newest_first:
-                df = df.iloc[::-1]
-            st.caption(f"{len(df)} entries (kul {len(p['df'])})")
+            records = pick_rows(df, show, newest_first)
+            st.caption(f"{len(records)} entries (kul {len(df)})")
             st.caption("🔴 + Debit (sale)   |   🟢 - Credit (payment)")
-            st.markdown(ledger_html(df), unsafe_allow_html=True)
+            st.markdown(ledger_html(records), unsafe_allow_html=True)
