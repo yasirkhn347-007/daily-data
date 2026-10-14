@@ -76,6 +76,59 @@ def rate(v):
     return f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
 
 
+def signed(v):
+    return f"+{v:,.0f}" if v > 0 else (f"-{abs(v):,.0f}" if v < 0 else "0")
+
+
+def amount_color(v):
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    if v > 0:
+        return "color: #c62828; font-weight: 600"  # debit (+) laal
+    if v < 0:
+        return "color: #2e7d32; font-weight: 600"  # credit (-) hara
+    return ""
+
+
+def ledger_view(df):
+    """Statement ko dikhane ke liye: Debit/Credit ek column, V.No/Veh/GP ek column."""
+    out = pd.DataFrame(index=df.index)
+    out["Date"] = df["Date"]
+    out["Particulars"] = df["Particulars"]
+
+    def details(r):
+        parts = []
+        if r["V.No"]:
+            parts.append(f"V.No {r['V.No']}")
+        if r["Veh"]:
+            parts.append(f"Veh {r['Veh']}")
+        if r["GP"]:
+            parts.append(f"GP {r['GP']}")
+        return " | ".join(parts)
+
+    out["Details"] = df.apply(details, axis=1) if len(df) else ""
+    out["Qty"] = df["Qty"]
+    out["Rate"] = df["Rate"]
+    dr = df["Debit"].fillna(0)
+    cr = df["Credit"].fillna(0)
+    amt = dr - cr
+    amt[df["Debit"].isna() & df["Credit"].isna()] = float("nan")
+    out["Amount (+/-)"] = amt
+    out["Balance"] = df["Balance"]
+    return out
+
+
+def style_ledger(out):
+    sty = out.style.format(
+        {"Rate": rate, "Amount (+/-)": signed, "Balance": money}, na_rep=""
+    )
+    apply_map = sty.map if hasattr(sty, "map") else sty.applymap
+    return apply_map(amount_color, subset=["Amount (+/-)"])
+
+
 # ------------------------------------------------------------------ parsing
 def parse_summary(raw):
     report_date = ""
@@ -266,11 +319,10 @@ with tab_summary:
             | view["City"].str.contains(q, case=False, na=False)
         )
         view = view[m]
+    view = view[["S.No", "Party", "City", "Total Balance"]]
     st.write(f"Rows: {len(view)}")
     st.dataframe(
-        view.style.format(na_rep="").format(
-            {"Sales": money, "Received": money, "Total Balance": money}, na_rep=""
-        ),
+        view.style.format(na_rep="").format({"Total Balance": money}, na_rep=""),
         use_container_width=True,
         hide_index=True,
         height=600,
@@ -316,11 +368,9 @@ with tab_party:
             if newest_first:
                 df = df.iloc[::-1]
             st.caption(f"{len(df)} entries (kul {len(p['df'])})")
+            st.caption("🔴 + Debit (sale)   |   🟢 - Credit (payment)")
             st.dataframe(
-                df.style.format(
-                    {"Rate": rate, "Debit": money, "Credit": money, "Balance": money},
-                    na_rep="",
-                ),
+                style_ledger(ledger_view(df)),
                 use_container_width=True,
                 hide_index=True,
                 height=520,
