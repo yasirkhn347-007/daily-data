@@ -1,3 +1,4 @@
+import html
 import io
 import os
 import pickle
@@ -80,53 +81,65 @@ def signed(v):
     return f"+{v:,.0f}" if v > 0 else (f"-{abs(v):,.0f}" if v < 0 else "0")
 
 
-def amount_color(v):
-    try:
-        if pd.isna(v):
-            return ""
-    except (TypeError, ValueError):
-        return ""
-    if v > 0:
-        return "color: #c62828; font-weight: 600"  # debit (+) laal
-    if v < 0:
-        return "color: #2e7d32; font-weight: 600"  # credit (-) hara
-    return ""
+def details_lines(r):
+    """Line 1: V.No. Veh. GP   |   Line 2: Qty@Rate"""
+    parts = []
+    if r["V.No"]:
+        parts.append(r["V.No"])
+    if r["Veh"]:
+        parts.append(f"Veh {r['Veh']}" if r["Veh"].replace(" ", "").isdigit() else r["Veh"])
+    if r["GP"]:
+        parts.append(f"GP {r['GP']}")
+    line1 = ". ".join(parts)
+    rt = r["Rate"]
+    rt = None if rt is None or pd.isna(rt) else short_num(rt)
+    if r["Qty"] and rt:
+        line2 = f"{r['Qty']}@{rt}"
+    else:
+        line2 = r["Qty"] or (f"@{rt}" if rt else "")
+    return [x for x in (line1, line2) if x]
 
 
-def ledger_view(df):
-    """Statement ko dikhane ke liye: Debit/Credit ek column, V.No/Veh/GP ek column."""
-    out = pd.DataFrame(index=df.index)
-    out["Date"] = df["Date"]
-    out["Particulars"] = df["Particulars"]
-
-    def details(r):
-        parts = []
-        if r["V.No"]:
-            parts.append(f"V.No {r['V.No']}")
-        if r["Veh"]:
-            parts.append(f"Veh {r['Veh']}")
-        if r["GP"]:
-            parts.append(f"GP {r['GP']}")
-        return " | ".join(parts)
-
-    out["Details"] = df.apply(details, axis=1) if len(df) else ""
-    out["Qty"] = df["Qty"]
-    out["Rate"] = df["Rate"]
-    dr = df["Debit"].fillna(0)
-    cr = df["Credit"].fillna(0)
-    amt = dr - cr
-    amt[df["Debit"].isna() & df["Credit"].isna()] = float("nan")
-    out["Amount (+/-)"] = amt
-    out["Balance"] = df["Balance"]
-    return out
-
-
-def style_ledger(out):
-    sty = out.style.format(
-        {"Rate": rate, "Amount (+/-)": signed, "Balance": money}, na_rep=""
+def ledger_html(df):
+    """Statement ki table (Details ek cell mein 2 line, Amount rang aur +/- ke saath)."""
+    esc = html.escape
+    cell = "padding:6px 8px;vertical-align:top;border-bottom:1px solid rgba(128,128,128,0.3);"
+    head = (
+        "padding:8px;text-align:left;background:#f0f2f6;color:#31333f;"
+        "position:sticky;top:0;white-space:nowrap;"
     )
-    apply_map = sty.map if hasattr(sty, "map") else sty.applymap
-    return apply_map(amount_color, subset=["Amount (+/-)"])
+    out = [
+        '<div style="max-height:560px;overflow:auto;border:1px solid rgba(128,128,128,0.3);border-radius:6px;">',
+        '<table style="width:100%;border-collapse:collapse;font-size:14px;">',
+        "<thead><tr>"
+        + "".join(
+            f'<th style="{head}{"text-align:right;" if h in ("Amount (+/-)", "Balance") else ""}">{h}</th>'
+            for h in ("Date", "Particulars", "Details", "Amount (+/-)", "Balance")
+        )
+        + "</tr></thead><tbody>",
+    ]
+    for r in df.to_dict("records"):
+        dr, cr = r["Debit"], r["Credit"]
+        dr_ok, cr_ok = pd.notna(dr), pd.notna(cr)
+        amt_html = ""
+        if dr_ok or cr_ok:
+            amt = (dr if dr_ok else 0) - (cr if cr_ok else 0)
+            color = "#e53935" if amt > 0 else ("#2e9e4f" if amt < 0 else "inherit")
+            amt_html = f'<span style="color:{color};font-weight:600;">{signed(amt)}</span>'
+        bal = r["Balance"]
+        bal_txt = "" if pd.isna(bal) else f"{bal:,.0f}"
+        det = "<br>".join(esc(x) for x in details_lines(r))
+        out.append(
+            "<tr>"
+            f'<td style="{cell}white-space:nowrap;">{esc(r["Date"])}</td>'
+            f'<td style="{cell}">{esc(r["Particulars"])}</td>'
+            f'<td style="{cell}white-space:nowrap;">{det}</td>'
+            f'<td style="{cell}text-align:right;white-space:nowrap;">{amt_html}</td>'
+            f'<td style="{cell}text-align:right;white-space:nowrap;">{bal_txt}</td>'
+            "</tr>"
+        )
+    out.append("</tbody></table></div>")
+    return "".join(out)
 
 
 # ------------------------------------------------------------------ parsing
@@ -369,9 +382,4 @@ with tab_party:
                 df = df.iloc[::-1]
             st.caption(f"{len(df)} entries (kul {len(p['df'])})")
             st.caption("🔴 + Debit (sale)   |   🟢 - Credit (payment)")
-            st.dataframe(
-                style_ledger(ledger_view(df)),
-                use_container_width=True,
-                hide_index=True,
-                height=520,
-            )
+            st.markdown(ledger_html(df), unsafe_allow_html=True)
